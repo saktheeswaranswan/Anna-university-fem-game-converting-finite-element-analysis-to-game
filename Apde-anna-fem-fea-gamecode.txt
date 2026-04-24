@@ -1,0 +1,430 @@
+// ======================================
+// FEM UI - CLEAN PANEL + FORCE VECTOR
+// ======================================
+
+import java.util.HashMap;
+
+final int COLS = 6;
+final int ROWS = 2;
+final int TOTAL_NODES = COLS * ROWS;
+final int TOTAL_TRIS  = 10;
+
+ArrayList<NodeSprite> nodes = new ArrayList<NodeSprite>();
+ArrayList<Element> elements = new ArrayList<Element>();
+
+// 🔵 STIFFNESS
+HashMap<String, Float> K_sparse = new HashMap<String, Float>();
+HashMap<String, Boolean> activeConnections = new HashMap<String, Boolean>();
+
+// 🔴 FORCE (NEW)
+HashMap<Integer, Float> F_sparse = new HashMap<Integer, Float>();
+HashMap<Integer, Boolean> activeForces = new HashMap<Integer, Boolean>();
+
+boolean numberingMode = true;
+int currentNumber = 0;
+int visibleTriangles = 10;
+
+Button resetBtn, modeBtn;
+
+// layout
+float topH, midH, botH;
+
+// --------------------------------------
+void setup() {
+  fullScreen();
+  smooth();
+
+  topH = height * 0.35;
+  midH = height * 0.45;
+  botH = height * 0.20;
+
+  float startX = width * 0.1;
+  float startY = topH * 0.5;
+
+  for (int r = 0; r < ROWS; r++) {
+    for (int c = 0; c < COLS; c++) {
+      int idx = r * COLS + c;
+      nodes.add(new NodeSprite(startX + c*100, startY + r*120, idx));
+    }
+  }
+
+  for (int c = 0; c < 5; c++) {
+    elements.add(new Element(c, c+1, c+COLS+1));
+    elements.add(new Element(c, c+COLS+1, c+COLS));
+  }
+
+  resetBtn = new Button(20, height - 80, 140, 50, "RESET");
+  modeBtn  = new Button(180, height - 80, 200, 50, "MODE");
+}
+
+// --------------------------------------
+void draw() {
+  background(10);
+
+  assembleUpTo(visibleTriangles);
+
+  drawMeshPanel();
+  drawMatrixPanel();
+  drawForcePanel();   // 🔥 NEW
+  drawControlPanel();
+}
+
+// ======================================
+// 🔼 MESH PANEL
+// ======================================
+void drawMeshPanel() {
+  fill(20);
+  rect(0, 0, width, topH);
+
+  fill(255);
+  textSize(16);
+  text("MESH", 20, 25);
+
+  drawMesh();
+  drawNodes();
+}
+
+// ======================================
+// 🧠 MATRIX PANEL
+// ======================================
+void drawMatrixPanel() {
+
+  float yOffset = topH;
+
+  fill(25);
+  rect(0, yOffset, width, midH);
+
+  fill(255);
+  textSize(16);
+  text("GLOBAL STIFFNESS MATRIX", 20, yOffset + 25);
+
+  int ndof = TOTAL_NODES * 2;
+
+  float size = min(width * 0.65, midH * 0.75);
+  float cell = size / ndof;
+
+  float startX = 20;
+  float startY = yOffset + (midH - size)/2;
+
+  float maxVal = 1;
+  for (float v : K_sparse.values()) {
+    if (abs(v) > maxVal) maxVal = abs(v);
+  }
+
+  textAlign(CENTER, CENTER);
+
+  for (int r = 0; r < ndof; r++) {
+    for (int c = 0; c < ndof; c++) {
+
+      float x = startX + c * cell;
+      float y = startY + r * cell;
+
+      String key = r + "," + c;
+      float val = K_sparse.containsKey(key) ? K_sparse.get(key) : 0;
+
+      float intensity = map(abs(val), 0, maxVal, 30, 200);
+
+      if (activeConnections.containsKey(key)) {
+        fill(255, 80, 80);
+      } else {
+        fill(intensity, 120, 255 - intensity);
+      }
+
+      stroke(60);
+      rect(x, y, cell, cell);
+
+      if (cell > 14 && abs(val) > 0.01) {
+        fill(255);
+        textSize(10);
+        text(nf(val,1,1), x+cell/2, y+cell/2);
+
+        fill(255,200,0);
+        textSize(7);
+        text(r+","+c, x+cell/2, y+cell-6);
+      }
+    }
+  }
+}
+
+// ======================================
+// 🔴 FORCE PANEL (NEW)
+// ======================================
+void drawForcePanel(){
+
+  float panelW = width * 0.25;
+  float xOffset = width - panelW;
+  float yOffset = topH;
+
+  fill(30);
+  rect(xOffset, yOffset, panelW, midH);
+
+  fill(255);
+  textAlign(CENTER);
+  text("FORCE VECTOR", xOffset + panelW/2, yOffset + 20);
+
+  int ndof = TOTAL_NODES * 2;
+
+  float cellH = (midH - 40) / ndof;
+
+  float maxVal = 1;
+  for(float v : F_sparse.values()){
+    if(abs(v) > maxVal) maxVal = abs(v);
+  }
+
+  for(int i=0;i<ndof;i++){
+
+    float y = yOffset + 30 + i * cellH;
+
+    float val = F_sparse.containsKey(i) ? F_sparse.get(i) : 0;
+
+    float intensity = map(abs(val), 0, maxVal, 30, 255);
+
+    if(activeForces.containsKey(i)){
+      fill(255, 120, 80);
+    } else {
+      fill(80, intensity, 120);
+    }
+
+    rect(xOffset + 10, y, panelW - 20, cellH - 2);
+
+    fill(255);
+    textSize(10);
+    textAlign(LEFT, CENTER);
+    text("F["+i+"] = " + nf(val,1,1), xOffset + 15, y + cellH/2);
+  }
+}
+
+// ======================================
+// 🎛️ CONTROL PANEL
+// ======================================
+void drawControlPanel() {
+
+  float y = topH + midH;
+
+  fill(15);
+  rect(0, y, width, botH);
+
+  fill(255);
+  textSize(14);
+  text("CONTROLS", 20, y + 20);
+
+  drawSlider(y + 60);
+
+  resetBtn.display();
+  modeBtn.display();
+
+  modeBtn.label = numberingMode ? "MODE: NUMBER" : "MODE: VIEW";
+}
+
+// ======================================
+void drawSlider(float y) {
+
+  float t = map(visibleTriangles, 0, TOTAL_TRIS, 0, 1);
+
+  fill(80);
+  rect(40, y, width-80, 12, 10);
+
+  fill(100,200,255);
+  rect(40, y, (width-80)*t, 12, 10);
+
+  float knob = 40 + (width-80)*t;
+
+  fill(255);
+  ellipse(knob, y+6, 18, 18);
+
+  fill(255);
+  textAlign(CENTER);
+  text("Triangles: " + visibleTriangles, width/2, y - 10);
+}
+
+// ======================================
+void mousePressed() {
+
+  if (resetBtn.isClicked(mouseX, mouseY)) {
+    for (NodeSprite n : nodes) n.number = -1;
+    currentNumber = 0;
+    return;
+  }
+
+  if (modeBtn.isClicked(mouseX, mouseY)) {
+    numberingMode = !numberingMode;
+    return;
+  }
+
+  float y = topH + midH + 60;
+
+  if (mouseY > y - 10 && mouseY < y + 20) {
+    visibleTriangles = int(map(mouseX, 40, width-40, 0, TOTAL_TRIS));
+    visibleTriangles = constrain(visibleTriangles, 0, TOTAL_TRIS);
+  }
+
+  for (NodeSprite n : nodes) {
+    if (dist(mouseX, mouseY, n.x, n.y) < 15) {
+      if (numberingMode && n.number == -1) {
+        n.number = currentNumber++;
+      }
+    }
+  }
+}
+
+// ======================================
+// FEM LOGIC
+// ======================================
+void assembleUpTo(int count) {
+
+  K_sparse.clear();
+  activeConnections.clear();
+
+  F_sparse.clear();
+  activeForces.clear();
+
+  for (int ei = 0; ei < min(count, elements.size()); ei++) {
+
+    int[] I = getDOF(elements.get(ei));
+    float[][] ke = elementMatrix(ei);
+    float[] fe = elementForce(ei);
+
+    for (int i = 0; i < 6; i++) {
+
+      // 🔴 FORCE
+      addForce(I[i], fe[i]);
+
+      if (ei == count - 1) {
+        activeForces.put(I[i], true);
+      }
+
+      for (int j = 0; j < 6; j++) {
+
+        addSparse(I[i], I[j], ke[i][j]);
+
+        if (ei == count - 1) {
+          activeConnections.put(I[i]+","+I[j], true);
+        }
+      }
+    }
+  }
+}
+
+// ======================================
+float[] elementForce(int ei){
+
+  float[] fe = new float[6];
+
+  float load = 5 + ei * 2;
+
+  for(int i=0;i<6;i++){
+    if(i % 2 == 1){
+      fe[i] = load;
+    } else {
+      fe[i] = 0;
+    }
+  }
+
+  return fe;
+}
+
+// ======================================
+void addForce(int r, float v){
+  if(F_sparse.containsKey(r)){
+    F_sparse.put(r, F_sparse.get(r) + v);
+  } else {
+    F_sparse.put(r, v);
+  }
+}
+
+// ======================================
+int[] getDOF(Element e) {
+  int[] I = new int[6];
+
+  int[] ids = {
+    getID(nodes.get(e.a)),
+    getID(nodes.get(e.b)),
+    getID(nodes.get(e.c))
+  };
+
+  int k=0;
+  for(int id:ids){
+    I[k++] = 2*id;
+    I[k++] = 2*id+1;
+  }
+  return I;
+}
+
+int getID(NodeSprite n){
+  return (n.number!=-1)?n.number:n.idx;
+}
+
+// ======================================
+float[][] elementMatrix(int ei){
+  float[][] ke=new float[6][6];
+  float base=1+ei*0.3;
+
+  for(int i=0;i<6;i++){
+    for(int j=0;j<6;j++){
+      ke[i][j]=base/(1+abs(i-j));
+    }
+  }
+  return ke;
+}
+
+// ======================================
+void addSparse(int r,int c,float v){
+  String key=r+","+c;
+  if(K_sparse.containsKey(key)){
+    K_sparse.put(key,K_sparse.get(key)+v);
+  } else {
+    K_sparse.put(key,v);
+  }
+}
+
+// ======================================
+void drawMesh(){
+  for(int i=0;i<visibleTriangles;i++){
+    Element e=elements.get(i);
+
+    PVector a=nodes.get(e.a).pos();
+    PVector b=nodes.get(e.b).pos();
+    PVector c=nodes.get(e.c).pos();
+
+    fill(i==visibleTriangles-1?color(255,80,80):color(80,150,255));
+    triangle(a.x,a.y,b.x,b.y,c.x,c.y);
+  }
+}
+
+void drawNodes(){
+  for(NodeSprite n:nodes){
+    fill(200);
+    ellipse(n.x,n.y,18,18);
+
+    fill(255);
+    textAlign(CENTER);
+    text(n.number!=-1?n.number:n.idx,n.x,n.y-15);
+  }
+}
+
+// ======================================
+class NodeSprite{
+  float x,y; int idx; int number=-1;
+  NodeSprite(float x,float y,int idx){this.x=x;this.y=y;this.idx=idx;}
+  PVector pos(){return new PVector(x,y);}
+}
+
+class Element{
+  int a,b,c;
+  Element(int a,int b,int c){this.a=a;this.b=b;this.c=c;}
+}
+
+class Button{
+  float x,y,w,h; String label;
+  Button(float x,float y,float w,float h,String label){
+    this.x=x;this.y=y;this.w=w;this.h=h;this.label=label;
+  }
+  void display(){
+    fill(50); rect(x,y,w,h,12);
+    fill(255); textAlign(CENTER,CENTER);
+    text(label,x+w/2,y+h/2);
+  }
+  boolean isClicked(float mx,float my){
+    return mx>x&&mx<x+w&&my>y&&my<y+h;
+  }
+}
