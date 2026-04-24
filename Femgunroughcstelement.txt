@@ -1,0 +1,853 @@
+// ======================================
+// FEM INTERACTIVE + SOLVER (APDE CLEAN REWRITE)
+// - Clear K and F display
+// - Random visible node numbering
+// - Explicit boundary conditions
+// - Stable Gauss solver with partial pivoting
+// - Step-by-step elimination visualization
+// ======================================
+
+final int DOF = 2;
+
+// --------------------
+// MODEL
+// --------------------
+int cols = 5;
+int rows = 5;
+int n_nodes;
+int n_elements;
+int matrixSize;
+
+ArrayList<PVector> node_coords = new ArrayList<PVector>();
+ArrayList<Element> elements = new ArrayList<Element>();
+ArrayList<NodeSprite> nodeSprites = new ArrayList<NodeSprite>();
+ArrayList<Projectile> projectiles = new ArrayList<Projectile>();
+
+float[][] K_global;
+float[] F_global;
+float[] U;
+
+// Assembly state
+boolean[] nodeAssembled;
+boolean[] elementAssembled;
+boolean[] fixedDOF;
+int[] visibleNodeLabel;
+
+// Highlight buffers for assembly
+boolean[][] K_highlight;
+boolean[] F_highlight;
+
+// Solver view buffers
+float[][] K_view;
+float[] F_view;
+
+float[][] solveK;
+float[] solveF;
+
+boolean assemblyDone = false;
+boolean solverRunning = false;
+boolean solverDone = false;
+int solverPivot = 0;
+int currentPivotRow = -1;
+
+String solverStatus = "";
+String assemblyStatus = "Click to launch projectiles";
+
+// Visuals / layout
+float carriageX = 250;
+float barrelAngle = 0;
+
+int matrixCell = 18;
+int offsetX;
+int offsetY;
+
+float deformScale = 80.0;
+
+// --------------------
+// SETUP
+// --------------------
+void setup() {
+  size(1200, 600);
+  frameRate(60);
+
+  textFont(createFont("Arial", 12));
+  textAlign(LEFT, TOP);
+
+  buildModel();
+  resetSystem();
+}
+
+// --------------------
+// BUILD MESH
+// --------------------
+void buildModel() {
+  n_nodes = cols * rows;
+
+  node_coords.clear();
+  nodeSprites.clear();
+  elements.clear();
+
+  // Nodes on a regular grid
+  for (int y = 0; y < rows; y++) {
+    for (int x = 0; x < cols; x++) {
+      float px = 80 + x * 60;
+      float py = 60 + y * 60;
+      node_coords.add(new PVector(px, py));
+      nodeSprites.add(new NodeSprite(px, py, node_coords.size() - 1));
+    }
+  }
+
+  // Triangles
+  for (int y = 0; y < rows - 1; y++) {
+    for (int x = 0; x < cols - 1; x++) {
+      int n1 = y * cols + x;
+      int n2 = n1 + 1;
+      int n3 = n1 + cols;
+      int n4 = n3 + 1;
+
+      elements.add(new Element(n1, n2, n3));
+      elements.add(new Element(n2, n4, n3));
+    }
+  }
+
+  n_elements = elements.size();
+  matrixSize = DOF * n_nodes;
+
+  K_global = new float[matrixSize][matrixSize];
+  F_global = new float[matrixSize];
+  U = new float[matrixSize];
+
+  nodeAssembled = new boolean[n_nodes];
+  elementAssembled = new boolean[n_elements];
+  fixedDOF = new boolean[matrixSize];
+  visibleNodeLabel = new int[n_nodes];
+
+  K_highlight = new boolean[matrixSize][matrixSize];
+  F_highlight = new boolean[matrixSize];
+
+  K_view = K_global;
+  F_view = F_global;
+
+  offsetX = width / 2;
+  offsetY = 40;
+}
+
+// --------------------
+// RESET
+// --------------------
+void resetSystem() {
+  // clear matrices
+  for (int i = 0; i < matrixSize; i++) {
+    F_global[i] = 0;
+    U[i] = 0;
+    for (int j = 0; j < matrixSize; j++) {
+      K_global[i][j] = 0;
+      K_highlight[i][j] = false;
+    }
+    F_highlight[i] = false;
+  }
+
+  // state reset
+  for (int i = 0; i < n_nodes; i++) nodeAssembled[i] = false;
+  for (int i = 0; i < n_elements; i++) elementAssembled[i] = false;
+
+  assemblyDone = false;
+  solverRunning = false;
+  solverDone = false;
+  solverPivot = 0;
+  currentPivotRow = -1;
+  solverStatus = "Waiting for assembly";
+  assemblyStatus = "Click to launch projectiles";
+
+  projectiles.clear();
+
+  // Random visible numbering
+  randomizeNodeLabels();
+
+  // Boundary conditions: left edge fixed UX = 0, UY = 0
+  setBoundaryConditions();
+
+  // Use the global matrices for display before solving
+  K_view = K_global;
+  F_view = F_global;
+}
+
+// --------------------
+// RANDOMIZE VISIBLE NODE LABELS
+// --------------------
+void randomizeNodeLabels() {
+  int[] labels = new int[n_nodes];
+  for (int i = 0; i < n_nodes; i++) {
+    labels[i] = i + 1;
+  }
+
+  // Fisher-Yates shuffle
+  for (int i = n_nodes - 1; i > 0; i--) {
+    int j = int(random(i + 1));
+    int tmp = labels[i];
+    labels[i] = labels[j];
+    labels[j] = tmp;
+  }
+
+  for (int i = 0; i < n_nodes; i++) {
+    visibleNodeLabel[i] = labels[i];
+  }
+}
+
+// --------------------
+// BOUNDARY CONDITIONS
+// --------------------
+void setBoundaryConditions() {
+  // Fix all DOFs on the left edge (stable cantilever-style support)
+  for (int y = 0; y < rows; y++) {
+    int node = y * cols;
+    fixedDOF[2 * node] = true;       // UX
+    fixedDOF[2 * node + 1] = true;   // UY
+  }
+}
+
+void applyBoundaryConditions(float[][] K, float[] F) {
+  for (int dof = 0; dof < matrixSize; dof++) {
+    if (!fixedDOF[dof]) continue;
+
+    for (int j = 0; j < matrixSize; j++) {
+      K[dof][j] = 0;
+      K[j][dof] = 0;
+    }
+    K[dof][dof] = 1;
+    F[dof] = 0;
+  }
+}
+
+// --------------------
+// DRAW LOOP
+// --------------------
+void draw() {
+  background(20);
+
+  if (solverRunning && !solverDone) {
+    solverAdvance();
+  }
+
+  drawMesh();
+  drawCannon();
+  updateProjectiles();
+  drawMatrix();
+  drawBoundaryPanel();
+  drawResultPanel();
+
+  if (assemblyDone && !solverRunning && !solverDone) {
+    beginSolve();
+  }
+}
+
+// --------------------
+// MESH DRAW
+// --------------------
+void drawMesh() {
+  stroke(80);
+  strokeWeight(1);
+
+  // draw element edges using deformed coordinates
+  for (Element el : elements) {
+    PVector a = getDeformedPos(el.nodes[0]);
+    PVector b = getDeformedPos(el.nodes[1]);
+    PVector c = getDeformedPos(el.nodes[2]);
+
+    line(a.x, a.y, b.x, b.y);
+    line(b.x, b.y, c.x, c.y);
+    line(c.x, c.y, a.x, a.y);
+  }
+
+  textAlign(CENTER, CENTER);
+  textSize(11);
+
+  for (NodeSprite n : nodeSprites) {
+    PVector p = getDeformedPos(n.idx);
+
+    boolean isFixed = isNodeFixed(n.idx);
+    boolean isAssembled = nodeAssembled[n.idx];
+
+    if (isFixed) fill(255, 80, 80);
+    else if (solverDone) fill(120, 200, 255);
+    else if (isAssembled) fill(255, 180, 0);
+    else fill(220);
+
+    noStroke();
+    ellipse(p.x, p.y, 10, 10);
+
+    fill(255);
+    text(visibleNodeLabel[n.idx], p.x + 12, p.y - 10);
+  }
+
+  textAlign(LEFT, TOP);
+}
+
+PVector getDeformedPos(int idx) {
+  PVector p = node_coords.get(idx);
+  float dx = 0;
+  float dy = 0;
+
+  if (solverDone && U != null) {
+    dx = U[2 * idx] * deformScale;
+    dy = U[2 * idx + 1] * deformScale;
+  }
+
+  return new PVector(p.x + dx, p.y + dy);
+}
+
+boolean isNodeFixed(int nodeIdx) {
+  return fixedDOF[2 * nodeIdx] || fixedDOF[2 * nodeIdx + 1];
+}
+
+// --------------------
+// CANNON
+// --------------------
+void drawCannon() {
+  pushMatrix();
+  translate(carriageX, 500);
+  rotate(barrelAngle);
+  fill(100);
+  rect(0, -5, 60, 10);
+  popMatrix();
+
+  fill(120);
+  rect(carriageX - 40, 500, 80, 20);
+}
+
+// --------------------
+// PROJECTILES
+// --------------------
+void updateProjectiles() {
+  for (Projectile p : projectiles) {
+    if (!p.stuck) {
+      p.x += p.vx;
+      p.y += p.vy;
+
+      barrelAngle = atan2(p.ty - 500, p.tx - carriageX);
+
+      if (dist(p.x, p.y, p.tx, p.ty) < 5) {
+        p.stuck = true;
+        if (!nodeAssembled[p.nIdx]) {
+          assembleNode(p.nIdx);
+          nodeAssembled[p.nIdx] = true;
+        }
+      }
+    }
+
+    noStroke();
+    fill(p.stuck ? color(255, 80, 0) : color(255, 200, 0));
+    ellipse(p.x, p.y, 8, 8);
+  }
+
+  if (projectiles.size() > 0 && allProjectilesStuck() && !assemblyDone) {
+    assemblyDone = true;
+    assemblyStatus = "Assembly complete";
+  }
+}
+
+// --------------------
+// INPUT
+// --------------------
+void mousePressed() {
+  resetSystem();
+  launchProjectiles();
+}
+
+void keyPressed() {
+  if (key == 'r' || key == 'R') {
+    resetSystem();
+    launchProjectiles();
+  }
+}
+
+void launchProjectiles() {
+  projectiles.clear();
+
+  int[] order = new int[n_nodes];
+  for (int i = 0; i < n_nodes; i++) order[i] = i;
+
+  // shuffle targets
+  for (int i = n_nodes - 1; i > 0; i--) {
+    int j = int(random(i + 1));
+    int tmp = order[i];
+    order[i] = order[j];
+    order[j] = tmp;
+  }
+
+  int count = n_nodes;
+
+  for (int i = 0; i < count; i++) {
+    int idx = order[i];
+    PVector n = node_coords.get(idx);
+
+    float angle = atan2(n.y - 500, n.x - carriageX);
+    float speed = 6;
+
+    projectiles.add(new Projectile(
+      carriageX, 500,
+      speed * cos(angle), speed * sin(angle),
+      n.x, n.y,
+      idx
+    ));
+  }
+
+  assemblyStatus = "Assembly running...";
+}
+
+// --------------------
+// FEM ASSEMBLY
+// --------------------
+void assembleNode(int n) {
+  clearHighlights();
+
+  for (int ei = 0; ei < elements.size(); ei++) {
+    if (elementAssembled[ei]) continue;
+
+    Element el = elements.get(ei);
+
+    if (el.contains(n)) {
+      float[][] ke = new float[6][6];
+      float[] fe = new float[6];
+
+      // Synthetic but stable local matrix:
+      // diagonal strong, off-diagonal smaller, symmetric
+      float base = 6.0 + 0.35 * (ei + 1);
+
+      for (int i = 0; i < 6; i++) {
+        fe[i] = 1.5 + 0.25 * (ei + 1) + 0.1 * i;
+
+        for (int j = 0; j < 6; j++) {
+          if (i == j) {
+            ke[i][j] = base + 4.0 + 0.2 * i;
+          } else {
+            ke[i][j] = 0.20 * base / (1.0 + abs(i - j));
+          }
+        }
+      }
+
+      int[] I = new int[6];
+      int k = 0;
+      for (int nd : el.nodes) {
+        I[k++] = 2 * nd;
+        I[k++] = 2 * nd + 1;
+      }
+
+      for (int i = 0; i < 6; i++) {
+        F_global[I[i]] += fe[i];
+        F_highlight[I[i]] = true;
+
+        for (int j = 0; j < 6; j++) {
+          K_global[I[i]][I[j]] += ke[i][j];
+          K_highlight[I[i]][I[j]] = true;
+        }
+      }
+
+      elementAssembled[ei] = true;
+    }
+  }
+}
+
+// --------------------
+// ASSEMBLY HELPERS
+// --------------------
+boolean allProjectilesStuck() {
+  if (projectiles.size() == 0) return false;
+  for (Projectile p : projectiles) {
+    if (!p.stuck) return false;
+  }
+  return true;
+}
+
+void clearHighlights() {
+  for (int i = 0; i < matrixSize; i++) {
+    F_highlight[i] = false;
+    for (int j = 0; j < matrixSize; j++) {
+      K_highlight[i][j] = false;
+    }
+  }
+}
+
+// --------------------
+// SOLVER START
+// --------------------
+void beginSolve() {
+  solveK = copyMatrix(K_global);
+  solveF = copyVector(F_global);
+
+  applyBoundaryConditions(solveK, solveF);
+
+  K_view = solveK;
+  F_view = solveF;
+
+  solverPivot = 0;
+  currentPivotRow = -1;
+  solverRunning = true;
+  solverDone = false;
+  solverStatus = "Applying elimination...";
+}
+
+// --------------------
+// GAUSS SOLVER WITH PARTIAL PIVOTING (STEP BY STEP)
+// --------------------
+void solverAdvance() {
+  int n = solveF.length;
+
+  if (solverPivot >= n) {
+    U = backSubstitute(solveK, solveF);
+    solverRunning = false;
+    solverDone = true;
+    solverStatus = "Back-substitution complete";
+    printDisplacement();
+    return;
+  }
+
+  int k = solverPivot;
+  currentPivotRow = k;
+
+  // Partial pivoting
+  int maxRow = k;
+  for (int i = k + 1; i < n; i++) {
+    if (abs(solveK[i][k]) > abs(solveK[maxRow][k])) {
+      maxRow = i;
+    }
+  }
+
+  if (abs(solveK[maxRow][k]) < 1e-12) {
+    solverStatus = "Near-singular pivot at column " + k;
+    solverPivot++;
+    return;
+  }
+
+  if (maxRow != k) {
+    swapRows(solveK, solveF, k, maxRow);
+    solverStatus = "Pivot swap: R" + (k + 1) + " <-> R" + (maxRow + 1);
+  } else {
+    solverStatus = "Pivot row " + (k + 1);
+  }
+
+  float pivot = solveK[k][k];
+  if (abs(pivot) < 1e-12) {
+    solverStatus = "Zero pivot at row " + (k + 1);
+    solverPivot++;
+    return;
+  }
+
+  // Normalize pivot row
+  for (int j = k; j < n; j++) {
+    solveK[k][j] /= pivot;
+  }
+  solveF[k] /= pivot;
+
+  // Eliminate below pivot
+  for (int i = k + 1; i < n; i++) {
+    float factor = solveK[i][k];
+    if (abs(factor) < 1e-12) {
+      solveK[i][k] = 0;
+      continue;
+    }
+
+    for (int j = k; j < n; j++) {
+      solveK[i][j] -= factor * solveK[k][j];
+    }
+    solveF[i] -= factor * solveF[k];
+    solveK[i][k] = 0;
+  }
+
+  solverPivot++;
+
+  if (solverPivot >= n) {
+    U = backSubstitute(solveK, solveF);
+    solverRunning = false;
+    solverDone = true;
+    solverStatus = "Solved";
+    printDisplacement();
+  }
+}
+
+float[] backSubstitute(float[][] A, float[] b) {
+  int n = b.length;
+  float[] x = new float[n];
+
+  for (int i = n - 1; i >= 0; i--) {
+    float sum = b[i];
+    for (int j = i + 1; j < n; j++) {
+      sum -= A[i][j] * x[j];
+    }
+
+    if (abs(A[i][i]) < 1e-12) {
+      x[i] = 0;
+    } else {
+      x[i] = sum / A[i][i];
+    }
+  }
+
+  return x;
+}
+
+void swapRows(float[][] A, float[] b, int r1, int r2) {
+  float[] tmpRow = A[r1];
+  A[r1] = A[r2];
+  A[r2] = tmpRow;
+
+  float tmp = b[r1];
+  b[r1] = b[r2];
+  b[r2] = tmp;
+}
+
+float[][] copyMatrix(float[][] src) {
+  int n = src.length;
+  float[][] dst = new float[n][n];
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
+      dst[i][j] = src[i][j];
+    }
+  }
+  return dst;
+}
+
+float[] copyVector(float[] src) {
+  float[] dst = new float[src.length];
+  for (int i = 0; i < src.length; i++) dst[i] = src[i];
+  return dst;
+}
+
+// --------------------
+// PRINT DISPLACEMENT
+// --------------------
+void printDisplacement() {
+  println("===== DISPLACEMENT =====");
+
+  for (int i = 0; i < n_nodes; i++) {
+    int ux = 2 * i;
+    int uy = 2 * i + 1;
+
+    println(
+      "Node " + visibleNodeLabel[i] +
+      "  [idx " + i + "]" +
+      "  UX = " + nf(U[ux], 1, 6) +
+      "  UY = " + nf(U[uy], 1, 6)
+    );
+  }
+}
+
+// --------------------
+// MATRIX DRAW
+// --------------------
+void drawMatrix() {
+  float[][] M = K_view;
+  float[] V = F_view;
+
+  int visible = min(20, matrixSize);
+
+  // panel title
+  fill(255);
+  textSize(13);
+  text("K matrix", offsetX, offsetY - 22);
+  text("F vector", offsetX + visible * matrixCell + 32, offsetY - 22);
+
+  // solver status
+  textSize(11);
+  fill(200);
+  text("Status: " + solverStatus, offsetX, 12);
+  text("Step: " + solverPivot + " / " + matrixSize, offsetX, 26);
+
+  textAlign(CENTER, CENTER);
+  textSize(10);
+
+  // column headers
+  fill(220);
+  for (int j = 0; j < visible; j++) {
+    text(j, offsetX + j * matrixCell + matrixCell * 0.5, offsetY - 8);
+  }
+
+  // row headers
+  for (int i = 0; i < visible; i++) {
+    text(i, offsetX - 12, offsetY + i * matrixCell + matrixCell * 0.5);
+  }
+
+  // K matrix
+  for (int i = 0; i < visible; i++) {
+    for (int j = 0; j < visible; j++) {
+      float val = M[i][j];
+
+      boolean isPivotRow = (solverRunning || solverDone) && (i == currentPivotRow);
+      boolean showBCShade = !solverRunning;   // while solving, use the pivot view instead
+      boolean isConstrained = showBCShade && (fixedDOF[i] || fixedDOF[j]);
+
+      if (K_highlight[i][j]) {
+        fill(0, 160, 255);
+      } else if (isPivotRow) {
+        fill(255, 210, 70);
+      } else if (isConstrained) {
+        fill(130, 80, 170);
+      } else if (abs(val) < 1e-6) {
+        fill(35);
+      } else {
+        fill(200);
+      }
+
+      noStroke();
+      rect(offsetX + j * matrixCell, offsetY + i * matrixCell, matrixCell, matrixCell);
+
+      fill(0);
+      text(nf(val, 1, 2),
+        offsetX + j * matrixCell + matrixCell * 0.5,
+        offsetY + i * matrixCell + matrixCell * 0.5 - 1);
+    }
+  }
+
+  // F vector
+  for (int i = 0; i < visible; i++) {
+    float val = V[i];
+
+    boolean isPivotRow = (solverRunning || solverDone) && (i == currentPivotRow);
+    boolean showBCShade = !solverRunning;
+    boolean isConstrained = showBCShade && fixedDOF[i];
+
+    if (F_highlight[i]) {
+      fill(255, 120, 0);
+    } else if (isPivotRow) {
+      fill(255, 210, 70);
+    } else if (isConstrained) {
+      fill(130, 80, 170);
+    } else if (abs(val) < 1e-6) {
+      fill(35);
+    } else {
+      fill(200);
+    }
+
+    noStroke();
+    rect(offsetX + visible * matrixCell + 32, offsetY + i * matrixCell, matrixCell, matrixCell);
+
+    fill(0);
+    text(nf(val, 1, 2),
+      offsetX + visible * matrixCell + 32 + matrixCell * 0.5,
+      offsetY + i * matrixCell + matrixCell * 0.5 - 1);
+  }
+
+  textAlign(LEFT, TOP);
+}
+
+// --------------------
+// BOUNDARY CONDITIONS PANEL
+// --------------------
+void drawBoundaryPanel() {
+  int x = 1010;
+  int y = 40;
+
+  fill(255);
+  textSize(13);
+  text("Boundary conditions", x, y);
+
+  textSize(11);
+  fill(230);
+  text("Left edge fixed:", x, y + 22);
+  text("UX = 0", x, y + 40);
+  text("UY = 0", x, y + 56);
+
+  y += 80;
+  text("Fixed nodes:", x, y);
+
+  int yy = y + 18;
+  for (int node = 0; node < n_nodes; node++) {
+    if (isNodeFixed(node)) {
+      fill(255, 120, 120);
+      text("Node " + visibleNodeLabel[node] + " (idx " + node + ")", x, yy);
+      yy += 16;
+    }
+  }
+
+  fill(200);
+  yy += 10;
+  text("Assembly:", x, yy);
+  yy += 16;
+  text(assemblyStatus, x, yy);
+}
+
+// --------------------
+// RESULTS PANEL
+// --------------------
+void drawResultPanel() {
+  int x = 1010;
+  int y = 250;
+
+  fill(255);
+  textSize(13);
+  text("Results", x, y);
+
+  textSize(11);
+
+  if (U == null) {
+    fill(180);
+    text("No solution yet", x, y + 22);
+    return;
+  }
+
+  int showNodes = min(n_nodes, 8);
+  int yy = y + 22;
+
+  for (int i = 0; i < showNodes; i++) {
+    fill(220);
+    text(
+      "N" + visibleNodeLabel[i] +
+      " UX=" + nf(U[2 * i], 1, 4) +
+      " UY=" + nf(U[2 * i + 1], 1, 4),
+      x,
+      yy
+    );
+    yy += 16;
+  }
+
+  if (n_nodes > showNodes) {
+    fill(170);
+    text("...", x, yy + 4);
+  }
+}
+
+// --------------------
+// CLASSES
+// --------------------
+class NodeSprite {
+  float x, y;
+  int idx;
+
+  NodeSprite(float x, float y, int idx) {
+    this.x = x;
+    this.y = y;
+    this.idx = idx;
+  }
+}
+
+class Element {
+  int[] nodes;
+
+  Element(int a, int b, int c) {
+    nodes = new int[] { a, b, c };
+  }
+
+  boolean contains(int n) {
+    for (int i : nodes) {
+      if (i == n) return true;
+    }
+    return false;
+  }
+}
+
+class Projectile {
+  float x, y, vx, vy;
+  float tx, ty;
+  int nIdx;
+  boolean stuck = false;
+
+  Projectile(float x, float y, float vx, float vy,
+             float tx, float ty, int nIdx) {
+    this.x = x;
+    this.y = y;
+    this.vx = vx;
+    this.vy = vy;
+    this.tx = tx;
+    this.ty = ty;
+    this.nIdx = nIdx;
+  }
+}
