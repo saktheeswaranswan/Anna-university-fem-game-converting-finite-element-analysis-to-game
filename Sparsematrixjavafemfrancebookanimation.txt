@@ -1,0 +1,310 @@
+// ==========================================
+// FEM MESH + NODE NUMBERING (FINAL CLEAN)
+// REGULAR / BANDED / SHUFFLE
+// SHOW ORIGINAL + PERMUTED
+// ==========================================
+
+int nx = 4;
+int ny = 4;
+int DOF = 2;
+
+ArrayList<PVector> nodes = new ArrayList<PVector>();
+ArrayList<int[]> elements = new ArrayList<int[]>();
+
+int[] nodeNumber;   // new numbering (permuted)
+int[] order;        // permutation order
+
+float[][] K_global;
+
+final int MODE_REGULAR = 0;
+final int MODE_BANDED  = 1;
+final int MODE_SHUFFLE = 2;
+
+int mode = MODE_REGULAR;
+
+Button b1, b2, b3;
+
+// ==========================================
+void setup() {
+  fullScreen();
+  textSize(22);
+
+  b1 = new Button(40, 90, 180, 55, "Regular");
+  b2 = new Button(230, 90, 180, 55, "Banded");
+  b3 = new Button(420, 90, 180, 55, "Shuffle");
+
+  createGrid();
+  createElements();
+  buildNumbering(MODE_REGULAR);
+}
+
+// ==========================================
+void createGrid() {
+  nodes.clear();
+  float s = 120;
+
+  for (int j = 0; j < ny; j++) {
+    for (int i = 0; i < nx; i++) {
+      nodes.add(new PVector(150 + i*s, 180 + j*s));
+    }
+  }
+}
+
+// ==========================================
+void createElements() {
+  elements.clear();
+
+  for (int j = 0; j < ny-1; j++) {
+    for (int i = 0; i < nx-1; i++) {
+
+      int n1 = j*nx + i;
+      int n2 = n1 + 1;
+      int n3 = n1 + nx;
+      int n4 = n3 + 1;
+
+      elements.add(new int[]{n1,n2,n3});
+      elements.add(new int[]{n2,n4,n3});
+    }
+  }
+}
+
+// ==========================================
+void buildNumbering(int m) {
+
+  mode = m;
+
+  int n = nodes.size();
+  order = new int[n];
+  nodeNumber = new int[n];
+
+  if (m == MODE_REGULAR) regular();
+  if (m == MODE_BANDED)  banded();
+  if (m == MODE_SHUFFLE) shuffle();
+
+  for (int i = 0; i < n; i++) {
+    nodeNumber[order[i]] = i;
+  }
+
+  assemble();
+}
+
+// ==========================================
+void regular() {
+  for (int i = 0; i < nodes.size(); i++) {
+    order[i] = i;
+  }
+}
+
+// ==========================================
+void banded() {
+
+  int k = 0;
+
+  for (int j = 0; j < ny; j++) {
+
+    if (j % 2 == 0) {
+      for (int i = 0; i < nx; i++) {
+        order[k++] = j*nx + i;
+      }
+    } else {
+      for (int i = nx-1; i >= 0; i--) {
+        order[k++] = j*nx + i;
+      }
+    }
+  }
+}
+
+// ==========================================
+void shuffle() {
+
+  int n = nodes.size();
+
+  for (int i = 0; i < n; i++) order[i] = i;
+
+  for (int i = n-1; i > 0; i--) {
+    int j = int(random(i+1));
+    int t = order[i];
+    order[i] = order[j];
+    order[j] = t;
+  }
+}
+
+// ==========================================
+float[][] localK() {
+
+  float[][] K = new float[6][6];
+
+  for (int i = 0; i < 6; i++) {
+    for (int j = 0; j < 6; j++) {
+      K[i][j] = (i==j)?2:1;
+    }
+  }
+
+  return K;
+}
+
+// ==========================================
+void assemble() {
+
+  int size = nodes.size()*DOF;
+  K_global = new float[size][size];
+
+  for (int[] e : elements) {
+
+    float[][] Ke = localK();
+    int[] map = new int[6];
+
+    for (int i = 0; i < 3; i++) {
+      int g = nodeNumber[e[i]];
+      map[2*i]   = g*2;
+      map[2*i+1] = g*2+1;
+    }
+
+    for (int i = 0; i < 6; i++) {
+      for (int j = 0; j < 6; j++) {
+        K_global[map[i]][map[j]] += Ke[i][j];
+      }
+    }
+  }
+}
+
+// ==========================================
+void draw() {
+
+  background(0);
+
+  title();
+  buttons();
+  mesh();
+  nodes();
+  sparse();
+
+  fill(255);
+  text("Red = new numbering | White = original", 40, height-40);
+}
+
+// ==========================================
+void title() {
+
+  fill(255);
+  textSize(28);
+  text("FEM Node Renumbering", 40, 40);
+
+  textSize(20);
+
+  String t = "Regular";
+  if (mode==MODE_BANDED) t="Banded";
+  if (mode==MODE_SHUFFLE) t="Shuffle";
+
+  text("Mode: " + t, 40, 70);
+}
+
+// ==========================================
+void buttons() {
+  b1.draw(mode==MODE_REGULAR);
+  b2.draw(mode==MODE_BANDED);
+  b3.draw(mode==MODE_SHUFFLE);
+}
+
+// ==========================================
+void mesh() {
+
+  stroke(0,255,0);
+  noFill();
+
+  for (int[] e : elements) {
+    PVector a = nodes.get(e[0]);
+    PVector b = nodes.get(e[1]);
+    PVector c = nodes.get(e[2]);
+
+    triangle(a.x,a.y,b.x,b.y,c.x,c.y);
+  }
+}
+
+// ==========================================
+// ⭐ IMPORTANT: SHOW BOTH NUMBERINGS
+// ==========================================
+void nodes() {
+
+  textAlign(CENTER, CENTER);
+
+  for (int i = 0; i < nodes.size(); i++) {
+
+    PVector p = nodes.get(i);
+
+    // node
+    fill(255,255,0);
+    noStroke();
+    ellipse(p.x,p.y,20,20);
+
+    // ORIGINAL (white, small)
+    fill(200);
+    textSize(14);
+    text(i, p.x, p.y - 20);
+
+    // NEW (red, big)
+    fill(255,0,0);
+    textSize(20);
+    text(nodeNumber[i]+1, p.x, p.y+2);
+  }
+}
+
+// ==========================================
+void sparse() {
+
+  float x = width*0.55;
+  float y = 140;
+  float c = 12;
+
+  fill(255);
+  text("Sparse Matrix", x, y-25);
+
+  for (int i = 0; i < K_global.length; i++) {
+    for (int j = 0; j < K_global.length; j++) {
+
+      if (abs(K_global[i][j])>0.01)
+        fill(0,150,255);
+      else
+        fill(20);
+
+      rect(x+j*c, y+i*c, c, c);
+    }
+  }
+}
+
+// ==========================================
+void mousePressed() {
+
+  if (b1.hit(mouseX,mouseY)) buildNumbering(MODE_REGULAR);
+  else if (b2.hit(mouseX,mouseY)) buildNumbering(MODE_BANDED);
+  else if (b3.hit(mouseX,mouseY)) buildNumbering(MODE_SHUFFLE);
+}
+
+// ==========================================
+class Button {
+
+  float x,y,w,h;
+  String t;
+
+  Button(float x,float y,float w,float h,String t){
+    this.x=x; this.y=y; this.w=w; this.h=h; this.t=t;
+  }
+
+  void draw(boolean active){
+
+    stroke(255);
+
+    if(active) fill(80,140,255);
+    else fill(50);
+
+    rect(x,y,w,h,12);
+
+    fill(255);
+    textAlign(CENTER,CENTER);
+    text(t,x+w/2,y+h/2);
+  }
+
+  boolean hit(float mx,float my){
+    return mx>x && mx<x+w && my>y && my<y+h;
+  }
+}
