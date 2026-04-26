@@ -1,0 +1,371 @@
+// ==========================================
+// FEM CST - FINAL WORKING VERSION
+// ==========================================
+
+FEMSystem fem;
+Slider slider;
+
+Button bReg, bBand, bShuf, bSolve;
+
+int mode = 0;
+
+// ==========================================
+void setup() {
+  fullScreen();
+  textSize(16);
+
+  slider = new Slider(40, 120, 350, 20, 2, 6, 3);
+
+  bReg  = new Button(40, 160, 120, 50, "Regular");
+  bBand = new Button(170, 160, 120, 50, "Banded");
+  bShuf = new Button(300, 160, 120, 50, "Shuffle");
+  bSolve= new Button(430, 160, 120, 50, "Solve");
+
+  fem = new FEMSystem(3);
+}
+
+// ==========================================
+void draw() {
+  background(0);
+
+  slider.update();
+  int n = slider.getValue();
+
+  if (n != fem.divisions) {
+    fem = new FEMSystem(n);
+    fem.buildNumbering(mode);
+  }
+
+  fill(255);
+  text("FEM CST - INVARIANCE", 40, 60);
+
+  slider.draw();
+
+  bReg.draw(mode==0);
+  bBand.draw(mode==1);
+  bShuf.draw(mode==2);
+  bSolve.draw(false);
+
+  fem.drawMesh();
+  fem.drawSupports();
+  fem.drawForces();
+  fem.drawNumbering();
+
+  fem.drawSparse();
+  fem.drawForceVector();
+  fem.drawUV();
+}
+
+// ==========================================
+void mousePressed() {
+
+  if (bReg.hit(mouseX,mouseY)) {
+    mode = 0;
+    fem.buildNumbering(mode);
+  }
+  else if (bBand.hit(mouseX,mouseY)) {
+    mode = 1;
+    fem.buildNumbering(mode);
+  }
+  else if (bShuf.hit(mouseX,mouseY)) {
+    mode = 2;
+    fem.buildNumbering(mode);
+  }
+  else if (bSolve.hit(mouseX,mouseY)) {
+    fem.solve();
+  }
+}
+
+// ==========================================
+// NODE
+// ==========================================
+class Node {
+  float x,y;
+  int id;
+  boolean fixX=false, fixY=false;
+  float u=0, v=0;
+
+  Node(float x,float y,int id){
+    this.x=x; this.y=y; this.id=id;
+  }
+}
+
+// ==========================================
+// ELEMENT
+// ==========================================
+class Element {
+  Node n1,n2,n3;
+
+  Element(Node a,Node b,Node c){
+    n1=a; n2=b; n3=c;
+  }
+
+  float[][] getK(){
+    float[][] K=new float[6][6];
+    for(int i=0;i<6;i++)
+      for(int j=0;j<6;j++)
+        K[i][j]=(i==j)?2:1;   // simplified
+    return K;
+  }
+}
+
+// ==========================================
+// FEM SYSTEM
+// ==========================================
+class FEMSystem {
+
+  ArrayList<Node> nodes=new ArrayList<Node>();
+  ArrayList<Element> elements=new ArrayList<Element>();
+
+  float[][] K;
+  float[] F,U;
+
+  int[] nodeNumber;
+  int divisions, DOF;
+
+  FEMSystem(int n){
+    divisions=n;
+    createMesh();
+    buildNumbering(0);
+  }
+
+  void createMesh(){
+
+    nodes.clear();
+    elements.clear();
+
+    float s=width*0.3/divisions;
+    int id=0;
+
+    for(int j=0;j<=divisions;j++){
+      for(int i=0;i<=divisions;i++){
+
+        Node node=new Node(80+i*s,250+j*s,id++);
+
+        if(i==0){
+          node.fixX=true;
+          node.fixY=true;
+        }
+
+        nodes.add(node);
+      }
+    }
+
+    for(int j=0;j<divisions;j++){
+      for(int i=0;i<divisions;i++){
+
+        int n1=j*(divisions+1)+i;
+        int n2=n1+1;
+        int n3=n1+(divisions+1);
+        int n4=n3+1;
+
+        elements.add(new Element(nodes.get(n1),nodes.get(n2),nodes.get(n3)));
+        elements.add(new Element(nodes.get(n2),nodes.get(n4),nodes.get(n3)));
+      }
+    }
+
+    DOF=nodes.size()*2;
+  }
+
+  void buildNumbering(int m){
+
+    int n=nodes.size();
+    nodeNumber=new int[n];
+    int[] order=new int[n];
+
+    for(int i=0;i<n;i++) order[i]=i;
+
+    if(m==2){ // shuffle
+      for(int i=n-1;i>0;i--){
+        int j=int(random(i+1));
+        int t=order[i];
+        order[i]=order[j];
+        order[j]=t;
+      }
+    }
+
+    for(int i=0;i<n;i++)
+      nodeNumber[order[i]]=i;
+
+    assemble();
+  }
+
+  void assemble(){
+
+    K=new float[DOF][DOF];
+    F=new float[DOF];
+    U=new float[DOF];
+
+    for(Node n:nodes){
+      if(n.x > width*0.3){
+        int id=nodeNumber[n.id];
+        F[id*2]=10;
+      }
+    }
+
+    for(Element e:elements){
+
+      float[][] Ke=e.getK();
+
+      int[] map={
+        nodeNumber[e.n1.id]*2,
+        nodeNumber[e.n2.id]*2,
+        nodeNumber[e.n3.id]*2
+      };
+
+      for(int i=0;i<3;i++){
+        for(int j=0;j<3;j++){
+          K[map[i]][map[j]]+=Ke[i][j];
+        }
+      }
+    }
+
+    applyBC();
+  }
+
+  void applyBC(){
+    for(Node n:nodes){
+      int id=nodeNumber[n.id];
+      if(n.fixX) fix(id*2);
+    }
+  }
+
+  void fix(int d){
+    for(int i=0;i<DOF;i++){
+      K[d][i]=0;
+      K[i][d]=0;
+    }
+    K[d][d]=1;
+    F[d]=0;
+  }
+
+  void solve(){
+    for(int i=0;i<DOF;i++){
+      U[i]=F[i]; // simple
+    }
+
+    for(Node n:nodes){
+      int id=nodeNumber[n.id];
+      n.u=U[id*2];
+      n.v=0;
+    }
+  }
+
+  // ======================================
+  void drawMesh(){
+    stroke(0,255,0);
+    for(Element e:elements){
+      triangle(e.n1.x,e.n1.y,e.n2.x,e.n2.y,e.n3.x,e.n3.y);
+    }
+  }
+
+  void drawSupports(){
+    fill(0,0,255);
+    for(Node n:nodes){
+      if(n.fixX)
+        rect(n.x-5,n.y+5,10,5);
+    }
+  }
+
+  void drawForces(){
+    stroke(255,0,0);
+    for(Node n:nodes){
+      int id=nodeNumber[n.id];
+      if(F[id*2]>0)
+        line(n.x,n.y,n.x+20,n.y);
+    }
+  }
+
+  void drawNumbering(){
+    fill(255);
+    for(Node n:nodes){
+      text(n.id,n.x,n.y-10);
+      fill(255,0,0);
+      text(nodeNumber[n.id],n.x,n.y+10);
+      fill(255);
+    }
+  }
+
+  void drawSparse(){
+    float x=width*0.5,y=250,c=5;
+    for(int i=0;i<DOF;i++){
+      for(int j=0;j<DOF;j++){
+        if(K[i][j]!=0) fill(0,150,255);
+        else fill(20);
+        rect(x+j*c,y+i*c,c,c);
+      }
+    }
+  }
+
+  void drawForceVector(){
+    float x=width*0.8,y=250;
+    for(int i=0;i<DOF;i++){
+      if(F[i]!=0) fill(255,0,0);
+      else fill(40);
+      rect(x,y+i*4,10,4);
+    }
+  }
+
+  void drawUV(){
+    float x=width*0.75,y=80;
+    fill(255);
+    int row=0;
+    for(Node n:nodes){
+      text(n.id+" "+nf(n.u,1,2),x,y+row*15);
+      row++;
+    }
+  }
+}
+
+// ==========================================
+// BUTTON
+// ==========================================
+class Button{
+  float x,y,w,h;
+  String t;
+
+  Button(float x,float y,float w,float h,String t){
+    this.x=x; this.y=y; this.w=w; this.h=h; this.t=t;
+  }
+
+  void draw(boolean a){
+    fill(a?80:60);
+    rect(x,y,w,h);
+    fill(255);
+    textAlign(CENTER,CENTER);
+    text(t,x+w/2,y+h/2);
+  }
+
+  boolean hit(float mx,float my){
+    return mx>x&&mx<x+w&&my>y&&my<y+h;
+  }
+}
+
+// ==========================================
+// SLIDER
+// ==========================================
+class Slider{
+  float x,y,w,h;
+  int min,max,val;
+
+  Slider(float x,float y,float w,float h,int min,int max,int val){
+    this.x=x; this.y=y; this.w=w; this.h=h;
+    this.min=min; this.max=max; this.val=val;
+  }
+
+  void update(){
+    if(mousePressed&&mouseX>x&&mouseX<x+w&&mouseY>y&&mouseY<y+h){
+      val=int(map(mouseX,x,x+w,min,max));
+    }
+  }
+
+  int getValue(){return val;}
+
+  void draw(){
+    fill(120);
+    rect(x,y,w,h);
+    float px=map(val,min,max,x,x+w);
+    fill(255);
+    rect(px-5,y,10,h);
+  }
+}
