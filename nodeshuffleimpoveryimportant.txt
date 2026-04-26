@@ -1,0 +1,501 @@
+// ==========================================
+// FEM CST (CORRECT PHYSICAL INVARIANCE)
+// ==========================================
+
+FEMSystem fem;
+Slider slider;
+
+Button bReg, bBand, bShuf, bSolve;
+
+int mode = 0;
+
+// ==========================================
+void setup() {
+  fullScreen();
+  textSize(16);
+
+  slider = new Slider(40, 120, 350, 20, 2, 6, 3);
+
+  bReg  = new Button(40, 160, 120, 50, "Regular");
+  bBand = new Button(170, 160, 120, 50, "Banded");
+  bShuf = new Button(300, 160, 120, 50, "Shuffle");
+  bSolve= new Button(430, 160, 120, 50, "Solve");
+
+  fem = new FEMSystem(3);
+}
+
+// ==========================================
+void draw() {
+  background(0);
+
+  slider.update();
+  int n = slider.getValue();
+
+  if (n != fem.divisions) {
+    fem = new FEMSystem(n);
+    fem.buildNumbering(mode);
+  }
+
+  title();
+
+  slider.draw();
+
+  bReg.draw(mode==0);
+  bBand.draw(mode==1);
+  bShuf.draw(mode==2);
+  bSolve.draw(false);
+
+  fem.drawMesh();
+  fem.drawSupports();
+  fem.drawForces();
+  fem.drawNumbering();
+
+  fem.drawSparse();
+  fem.drawForceVector();
+  fem.drawUV();
+}
+
+// ==========================================
+void mousePressed() {
+
+  if (bReg.hit(mouseX,mouseY)) {
+    mode = 0;
+    fem.buildNumbering(mode);
+  }
+  else if (bBand.hit(mouseX,mouseY)) {
+    mode = 1;
+    fem.buildNumbering(mode);
+  }
+  else if (bShuf.hit(mouseX,mouseY)) {
+    mode = 2;
+    fem.buildNumbering(mode);
+  }
+  else if (bSolve.hit(mouseX,mouseY)) {
+    fem.solve();
+  }
+}
+
+// ==========================================
+void title() {
+  fill(255);
+  textSize(22);
+  text("FEM CST - Invariant Solution", 40, 60);
+}
+
+// ==========================================
+// NODE
+// ==========================================
+class Node {
+  float x,y;
+  int id;
+
+  boolean fixX=false, fixY=false;
+
+  float u=0, v=0;
+
+  Node(float x,float y,int id){
+    this.x=x; this.y=y; this.id=id;
+  }
+}
+
+// ==========================================
+// ELEMENT
+// ==========================================
+class Element {
+
+  Node n1,n2,n3;
+
+  Element(Node a,Node b,Node c){
+    n1=a; n2=b; n3=c;
+  }
+
+  float[][] getK(){
+
+    float x1=n1.x,y1=n1.y;
+    float x2=n2.x,y2=n2.y;
+    float x3=n3.x,y3=n3.y;
+
+    float A = abs((x2-x1)*(y3-y1)-(x3-x1)*(y2-y1))/2;
+
+    float b1=y2-y3, b2=y3-y1, b3=y1-y2;
+    float c1=x3-x2, c2=x1-x3, c3=x2-x1;
+
+    float[][] B={
+      {b1,0,b2,0,b3,0},
+      {0,c1,0,c2,0,c3},
+      {c1,b1,c2,b2,c3,b3}
+    };
+
+    float[][] D={
+      {1,0.3,0},
+      {0.3,1,0},
+      {0,0,0.35}
+    };
+
+    float[][] K=new float[6][6];
+
+    for(int i=0;i<6;i++){
+      for(int j=0;j<6;j++){
+
+        float sum=0;
+
+        for(int k=0;k<3;k++){
+          for(int m=0;m<3;m++){
+            sum+=B[k][i]*D[k][m]*B[m][j];
+          }
+        }
+
+        K[i][j]=sum/(4*A);
+      }
+    }
+
+    return K;
+  }
+}
+
+// ==========================================
+// FEM SYSTEM
+// ==========================================
+class FEMSystem {
+
+  ArrayList<Node> nodes=new ArrayList<Node>();
+  ArrayList<Element> elements=new ArrayList<Element>();
+
+  float[][] K;
+  float[] F;
+  float[] U;
+
+  int[] nodeNumber;
+  int divisions, DOF;
+
+  FEMSystem(int n){
+    divisions=n;
+    createMesh();
+    buildNumbering(0);
+  }
+
+  // ======================================
+  void createMesh(){
+
+    nodes.clear();
+    elements.clear();
+
+    float s=width*0.3/divisions;
+
+    int id=0;
+
+    for(int j=0;j<=divisions;j++){
+      for(int i=0;i<=divisions;i++){
+
+        Node node=new Node(80+i*s,250+j*s,id++);
+
+        if(i==0){
+          node.fixX=true;
+          node.fixY=true;
+        }
+
+        nodes.add(node);
+      }
+    }
+
+    for(int j=0;j<divisions;j++){
+      for(int i=0;i<divisions;i++){
+
+        int n1=j*(divisions+1)+i;
+        int n2=n1+1;
+        int n3=n1+(divisions+1);
+        int n4=n3+1;
+
+        elements.add(new Element(nodes.get(n1),nodes.get(n2),nodes.get(n3)));
+        elements.add(new Element(nodes.get(n2),nodes.get(n4),nodes.get(n3)));
+      }
+    }
+
+    DOF=nodes.size()*2;
+  }
+
+  // ======================================
+  void buildNumbering(int m){
+
+    int n=nodes.size();
+    nodeNumber=new int[n];
+
+    int[] order=new int[n];
+
+    if(m==0){
+      for(int i=0;i<n;i++) order[i]=i;
+    }
+    else if(m==1){
+
+      int k=0;
+      for(int j=0;j<=divisions;j++){
+        if(j%2==0){
+          for(int i=0;i<=divisions;i++)
+            order[k++]=j*(divisions+1)+i;
+        } else {
+          for(int i=divisions;i>=0;i--)
+            order[k++]=j*(divisions+1)+i;
+        }
+      }
+    }
+    else {
+
+      for(int i=0;i<n;i++) order[i]=i;
+
+      for(int i=n-1;i>0;i--){
+        int j=int(random(i+1));
+        int t=order[i];
+        order[i]=order[j];
+        order[j]=t;
+      }
+    }
+
+    for(int i=0;i<n;i++)
+      nodeNumber[order[i]]=i;
+
+    assemble();
+  }
+
+  // ======================================
+  void assemble(){
+
+    K=new float[DOF][DOF];
+    F=new float[DOF];
+    U=new float[DOF];
+
+    // RIGHT EDGE FORCE
+    for(Node n:nodes){
+      if(n.x > width*0.3){
+        int id = nodeNumber[n.id];
+        F[id*2] = 10;
+      }
+    }
+
+    for(Element e:elements){
+
+      float[][] Ke=e.getK();
+
+      int[] map={
+        nodeNumber[e.n1.id]*2,
+        nodeNumber[e.n1.id]*2+1,
+        nodeNumber[e.n2.id]*2,
+        nodeNumber[e.n2.id]*2+1,
+        nodeNumber[e.n3.id]*2,
+        nodeNumber[e.n3.id]*2+1
+      };
+
+      for(int i=0;i<6;i++){
+        for(int j=0;j<6;j++){
+          K[map[i]][map[j]]+=Ke[i][j];
+        }
+      }
+    }
+
+    applyBC();
+  }
+
+  // ======================================
+  void applyBC(){
+
+    for(Node n:nodes){
+
+      int id=nodeNumber[n.id];
+
+      if(n.fixX) fix(id*2);
+      if(n.fixY) fix(id*2+1);
+    }
+  }
+
+  void fix(int d){
+
+    for(int i=0;i<DOF;i++){
+      K[d][i]=0;
+      K[i][d]=0;
+    }
+
+    K[d][d]=1;
+    F[d]=0;
+  }
+
+  // ======================================
+  void solve(){
+
+    float[][] A=new float[DOF][DOF];
+    float[] b=new float[DOF];
+
+    for(int i=0;i<DOF;i++){
+      for(int j=0;j<DOF;j++) A[i][j]=K[i][j];
+      b[i]=F[i];
+    }
+
+    for(int i=0;i<DOF;i++){
+
+      float pivot=A[i][i];
+
+      for(int j=i;j<DOF;j++) A[i][j]/=pivot;
+      b[i]/=pivot;
+
+      for(int k=0;k<DOF;k++){
+        if(k!=i){
+
+          float f=A[k][i];
+
+          for(int j=i;j<DOF;j++)
+            A[k][j]-=f*A[i][j];
+
+          b[k]-=f*b[i];
+        }
+      }
+    }
+
+    U=b;
+
+    // MAP BACK TO NODES
+    for(Node n:nodes){
+      int id=nodeNumber[n.id];
+      n.u=U[id*2];
+      n.v=U[id*2+1];
+    }
+  }
+
+  // ======================================
+  void drawMesh(){
+
+    stroke(0,255,0);
+
+    for(Element e:elements){
+      triangle(e.n1.x,e.n1.y,e.n2.x,e.n2.y,e.n3.x,e.n3.y);
+    }
+  }
+
+  void drawNumbering(){
+
+    textAlign(CENTER,CENTER);
+
+    for(Node n:nodes){
+      fill(255);
+      text(n.id,n.x,n.y-12);
+
+      fill(255,0,0);
+      text(nodeNumber[n.id]+1,n.x,n.y+5);
+    }
+  }
+
+  void drawForces(){
+
+    stroke(255,0,0);
+
+    for(Node n:nodes){
+      int id=nodeNumber[n.id];
+      if(F[id*2]>0)
+        line(n.x,n.y,n.x+20,n.y);
+    }
+  }
+
+  void drawSupports(){
+
+    fill(0,0,255);
+
+    for(Node n:nodes){
+      if(n.fixX)
+        rect(n.x-6,n.y+6,12,5);
+    }
+  }
+
+  void drawSparse(){
+
+    float x=width*0.5;
+    float y=250;
+    float c=5;
+
+    for(int i=0;i<DOF;i++){
+      for(int j=0;j<DOF;j++){
+
+        if(abs(K[i][j])>0.001)
+          fill(0,150,255);
+        else fill(20);
+
+        rect(x+j*c,y+i*c,c,c);
+      }
+    }
+  }
+
+  void drawForceVector(){
+
+    float x=width*0.8;
+    float y=250;
+
+    for(int i=0;i<DOF;i++){
+
+      if(abs(F[i])>0)
+        fill(255,0,0);
+      else fill(40);
+
+      rect(x,y+i*4,12,4);
+    }
+  }
+
+  void drawUV(){
+
+    float x=width*0.75;
+    float y=80;
+
+    fill(255);
+    text("Node   u      v",x,y);
+
+    int row=0;
+
+    for(Node n:nodes){
+
+      text(
+        n.id+"  "+
+        nf(n.u,1,3)+"  "+
+        nf(n.v,1,3),
+        x,y+20+row*16
+      );
+
+      row++;
+      if(row>20) break;
+    }
+  }
+}
+
+// ==========================================
+// BUTTON + SLIDER SAME AS BEFORE
+// ==========================================
+class Button{
+  float x,y,w,h; String t;
+  Button(float x,float y,float w,float h,String t){
+    this.x=x; this.y=y; this.w=w; this.h=h; this.t=t;
+  }
+  void draw(boolean a){
+    fill(a?80:60);
+    rect(x,y,w,h,8);
+    fill(255);
+    textAlign(CENTER,CENTER);
+    text(t,x+w/2,y+h/2);
+  }
+  boolean hit(float mx,float my){
+    return mx>x&&mx<x+w&&my>y&&my<y+h;
+  }
+}
+
+class Slider{
+  float x,y,w,h; int min,max,val;
+  Slider(float x,float y,float w,float h,int min,int max,int val){
+    this.x=x; this.y=y; this.w=w; this.h=h;
+    this.min=min; this.max=max; this.val=val;
+  }
+  void update(){
+    if(mousePressed&&mouseX>x&&mouseX<x+w&&mouseY>y&&mouseY<y+h){
+      val=int(map(mouseX,x,x+w,min,max));
+    }
+  }
+  int getValue(){return val;}
+  void draw(){
+    fill(120); rect(x,y,w,h);
+    float px=map(val,min,max,x,x+w);
+    fill(255); rect(px-5,y,10,h);
+    fill(255); text("Elements:"+val,x,y-10);
+  }
+}
