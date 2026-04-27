@@ -1,0 +1,410 @@
+// =====================================================
+// FEM PARALLEL SPARSE GST VISUALIZER (FINAL PERFECT UI)
+// =====================================================
+
+final int E = 5;
+final int LOCAL = 4;
+final int GLOBAL = 12;
+
+// =====================================================
+// GLOBAL MATRIX
+// =====================================================
+class GlobalMatrix {
+  float[][] K = new float[GLOBAL][GLOBAL];
+  int[][] hit = new int[GLOBAL][GLOBAL];
+
+  void add(int I, int J, float val) {
+    K[I][J] += val;
+    hit[I][J]++;
+  }
+
+  void draw(float x, float y, float cell) {
+    fill(0);
+    text("GLOBAL MATRIX", x + 200, y - 40);
+
+    for (int r = 0; r < GLOBAL; r++) {
+      for (int c = 0; c < GLOBAL; c++) {
+        fill(hit[r][c] == 0 ? 255 : color(200,180,120));
+        rect(x + c*cell, y + r*cell, cell, cell);
+
+        fill(0);
+        text(nf(K[r][c],0,2),
+             x + c*cell + cell/2,
+             y + r*cell + cell/2);
+      }
+    }
+  }
+}
+
+// =====================================================
+// ELEMENT
+// =====================================================
+class Element {
+
+  float[][] ke = new float[LOCAL][LOCAL];
+  int[] C = new int[LOCAL];
+
+  int ei=0, ej=0;
+  boolean finished=false;
+
+  Element() {
+    for (int i=0;i<LOCAL;i++) C[i]=i;
+  }
+
+  void step(GlobalMatrix G) {
+    if (finished) return;
+
+    int I = C[ei];
+    int J = C[ej];
+
+    G.add(I, J, ke[ei][ej]);
+
+    ej++;
+    if (ej>=LOCAL) { ej=0; ei++; }
+
+    if (ei>=LOCAL) finished=true;
+  }
+
+  void drawLocal(float x, float y, float cell,
+                 boolean active, boolean inputMode,
+                 int rSel, int cSel, String input) {
+
+    fill(0);
+    text("LOCAL MATRIX", x+120, y-40);
+
+    for (int r=0;r<LOCAL;r++) {
+      for (int c=0;c<LOCAL;c++) {
+
+        boolean sel = active && inputMode && r==rSel && c==cSel;
+
+        fill(sel ? color(255,200,120) : 240);
+        rect(x+c*cell, y+r*cell, cell, cell);
+
+        String txt = nf(ke[r][c],0,2);
+        if (sel) txt = input;
+
+        fill(0);
+        text(txt, x+c*cell+cell/2, y+r*cell+cell/2);
+      }
+    }
+  }
+
+  void drawDOF(float x, float y, float cell,
+               boolean active, boolean dofMode,
+               int sel, String input) {
+
+    fill(0);
+    text("DOF Mapping", x+120, y-20);
+
+    for (int i=0;i<LOCAL;i++) {
+
+      boolean s = active && dofMode && i==sel;
+
+      fill(s ? color(255,200,120) : 230);
+      rect(x+i*cell, y, cell, cell);
+
+      String txt = "g"+(C[i]+1);
+      if (s) txt = input;
+
+      fill(0);
+      text(txt, x+i*cell+cell/2, y+cell/2);
+
+      fill(200,150,255);
+      rect(x+i*cell, y+cell+5, cell, 30);
+      fill(0);
+      text("R", x+i*cell+cell/2, y+cell+20);
+    }
+  }
+}
+
+// =====================================================
+// MAIN
+// =====================================================
+Element[] elements = new Element[E];
+GlobalMatrix G;
+
+PFont font;
+float cell = 55;
+
+int activeElement = 0;
+
+boolean inputMode=false, dofMode=false, assembly=false;
+
+int rSel, cSel, dofSel;
+String input="";
+
+boolean allFinished=false;
+
+float leftX, rightX, topY;
+
+// =====================================================
+void setup() {
+  fullScreen();
+
+  font = createFont("Arial",16);
+  textFont(font);
+  textAlign(CENTER,CENTER);
+
+  G = new GlobalMatrix();
+  for (int i=0;i<E;i++) elements[i] = new Element();
+
+  computeLayout();
+}
+
+// =====================================================
+void computeLayout() {
+  leftX = 40;
+  rightX = width * 0.6;
+  topY = 120;
+}
+
+// =====================================================
+void draw() {
+  background(245);
+  computeLayout();
+
+  drawSelector();
+
+  elements[activeElement].drawLocal(
+    leftX, topY, cell,
+    true, inputMode, rSel, cSel, input
+  );
+
+  float dofY = topY + LOCAL*cell + 40;
+
+  elements[activeElement].drawDOF(
+    leftX, dofY, cell,
+    true, dofMode, dofSel, input
+  );
+
+  G.draw(rightX, topY, cell);
+
+  drawKeypadSmart(dofY);
+
+  drawButtons();
+  drawInfo();
+}
+
+// =====================================================
+void drawSelector() {
+  for (int i=0;i<E;i++) {
+    fill(i==activeElement ? color(180,220,255) : 200);
+    rect(40+i*120,20,100,40);
+    fill(0);
+    text("Element "+(i+1), 90+i*120,40);
+  }
+}
+
+// =====================================================
+// 🔥 SMART KEYPAD (NO OVERLAP GUARANTEED)
+// =====================================================
+String[] keys = {
+  "7","8","9",
+  "4","5","6",
+  "1","2","3",
+  "0",".","-",
+  "OK"
+};
+
+void drawKeypadSmart(float dofY) {
+
+  if (!inputMode && !dofMode) return;
+
+  float gapCenter = (leftX + rightX) / 2;
+
+  float keypadW = 3 * 60;
+  float keypadH = 5 * 60;
+
+  float x = gapCenter - keypadW/2;
+
+  // 🔥 SAFE VERTICAL ZONE
+  float topLimit = dofY + 120;
+  float bottomLimit = height - 140;
+
+  float available = bottomLimit - topLimit;
+
+  float y;
+
+  if (available > keypadH) {
+    // center inside safe zone
+    y = topLimit + (available - keypadH)/2;
+  } else {
+    // fallback (tight screen)
+    y = topLimit;
+  }
+
+  int idx=0;
+
+  for (int r=0;r<5;r++) {
+    for (int c=0;c<3;c++) {
+
+      if (idx>=keys.length) continue;
+
+      fill(220);
+      rect(x+c*60, y+r*60, 50, 50);
+
+      fill(0);
+      text(keys[idx], x+c*60+25, y+r*60+25);
+
+      idx++;
+    }
+  }
+}
+
+// =====================================================
+void drawButtons() {
+
+  fill(100,200,100);
+  rect(40,height-100,120,50);
+  fill(0);
+  text("FINISH",100,height-75);
+
+  fill(100,150,250);
+  rect(200,height-100,150,50);
+  fill(0);
+  text("ASSEMBLE",275,height-75);
+}
+
+// =====================================================
+boolean over(float x,float y,float w,float h){
+  return mouseX>x && mouseX<x+w && mouseY>y && mouseY<y+h;
+}
+
+// =====================================================
+void mousePressed() {
+
+  if (assembly) {
+    for (Element e : elements) e.step(G);
+    return;
+  }
+
+  for (int i=0;i<E;i++) {
+    if (over(40+i*120,20,100,40)) {
+      activeElement=i;
+      return;
+    }
+  }
+
+  Element el = elements[activeElement];
+
+  float x=leftX;
+  float y=topY;
+
+  for (int r=0;r<LOCAL;r++)
+    for (int c=0;c<LOCAL;c++)
+      if (over(x+c*cell,y+r*cell,cell,cell)) {
+        inputMode=true;
+        dofMode=false;
+        rSel=r;
+        cSel=c;
+        input="";
+        return;
+      }
+
+  float y2 = y + LOCAL*cell + 40;
+
+  for (int i=0;i<LOCAL;i++) {
+
+    if (over(x+i*cell,y2,cell,cell)) {
+      dofMode=true;
+      inputMode=false;
+      dofSel=i;
+      input="";
+      return;
+    }
+
+    if (over(x+i*cell,y2+cell+5,cell,30)) {
+      el.C[i] = int(random(GLOBAL));
+      return;
+    }
+  }
+
+  if (over(40,height-100,120,50)) {
+    allFinished=true;
+    return;
+  }
+
+  if (over(200,height-100,150,50) && allFinished) {
+    assembly=true;
+    return;
+  }
+
+  handleKeypadSmart(y2);
+}
+
+// =====================================================
+void handleKeypadSmart(float dofY) {
+
+  float gapCenter = (leftX + rightX) / 2;
+
+  float keypadW = 3 * 60;
+  float keypadH = 5 * 60;
+
+  float x = gapCenter - keypadW/2;
+
+  float topLimit = dofY + 120;
+  float bottomLimit = height - 140;
+
+  float available = bottomLimit - topLimit;
+
+  float y = (available > keypadH)
+            ? topLimit + (available - keypadH)/2
+            : topLimit;
+
+  int idx=0;
+
+  for (int r=0;r<5;r++) {
+    for (int c=0;c<3;c++) {
+
+      if (idx>=keys.length) continue;
+
+      if (over(x+c*60,y+r*60,50,50)) {
+
+        String k = keys[idx];
+
+        if (k.equals("OK")) {
+
+          if (input.length()>0) {
+
+            if (inputMode)
+              elements[activeElement].ke[rSel][cSel] = float(input);
+
+            if (dofMode) {
+              int v = int(input)-1;
+              if (v>=0 && v<GLOBAL)
+                elements[activeElement].C[dofSel]=v;
+            }
+          }
+
+          inputMode=false;
+          dofMode=false;
+        }
+        else input += k;
+
+        return;
+      }
+
+      idx++;
+    }
+  }
+}
+
+// =====================================================
+void drawInfo() {
+
+  if (!assembly) return;
+
+  String msg="";
+
+  for (int i=0;i<E;i++) {
+    Element e = elements[i];
+    if (!e.finished) {
+      int I=e.C[e.ei];
+      int J=e.C[e.ej];
+      msg += "E"+(i+1)+"→("+ (I+1)+","+(J+1)+")  ";
+    }
+  }
+
+  fill(0);
+  text(msg, width*0.6, height-40);
+}
