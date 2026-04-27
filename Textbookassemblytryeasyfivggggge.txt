@@ -1,0 +1,384 @@
+// =====================================================
+// FEM PARALLEL SPARSE GST VISUALIZER (FINAL CORRECTED)
+// =====================================================
+
+final int E = 3;
+final int LOCAL = 4;
+final int GLOBAL = 8;
+
+// matrices
+float[][] K = new float[GLOBAL][GLOBAL];
+float[][][] ke = new float[E][LOCAL][LOCAL];
+int[][] C = new int[E][LOCAL];
+
+// stepping
+int[] ei = new int[E];
+int[] ej = new int[E];
+boolean[] finished = new boolean[E];
+
+// UI
+PFont font;
+float cell = 55;
+
+int activeElement = 0;
+
+// modes
+boolean inputMode = false;
+boolean dofInputMode = false;
+boolean assemblyMode = false;
+
+// input
+int inputR, inputC;
+int dofIndex;
+String currentInput = "";
+
+// buttons
+boolean allFinished = false;
+
+// colors
+color[] eColor = {
+  color(255,80,80),
+  color(80,160,255),
+  color(80,200,120)
+};
+
+// sparse tracker
+int[][] hitCount = new int[GLOBAL][GLOBAL];
+
+// =====================================================
+void setup(){
+  fullScreen();
+  font = createFont("Arial",16);
+  textFont(font);
+  textAlign(CENTER,CENTER);
+  initialize();
+}
+
+// =====================================================
+void draw(){
+  background(245);
+  drawElementSelector();
+  drawLocal();
+  drawDOFEditor();
+  drawGlobal();
+  drawButtons();
+  drawKeypad();
+  drawInfo();
+}
+
+// =====================================================
+void initialize(){
+
+  for(int r=0;r<GLOBAL;r++){
+    for(int c=0;c<GLOBAL;c++){
+      K[r][c]=0;
+      hitCount[r][c]=0;
+    }
+  }
+
+  for(int k=0;k<E;k++){
+    ei[k]=0;
+    ej[k]=0;
+    finished[k]=false;
+
+    for(int i=0;i<LOCAL;i++){
+      C[k][i] = i;
+    }
+  }
+}
+
+// =====================================================
+boolean overRect(float x,float y,float w,float h){
+  return mouseX>x && mouseX<x+w && mouseY>y && mouseY<y+h;
+}
+
+// =====================================================
+void drawElementSelector(){
+  for(int k=0;k<E;k++){
+    fill(k==activeElement ? color(180,220,255) : 200);
+    rect(40 + k*120, 20, 100, 40);
+    fill(0);
+    text("Element "+(k+1), 90 + k*120, 40);
+  }
+}
+
+// =====================================================
+void drawLocal(){
+
+  float x=40, y=120;
+
+  fill(0);
+  text("LOCAL MATRIX", x+120,y-50);
+
+  for(int r=0;r<LOCAL;r++){
+    for(int c=0;c<LOCAL;c++){
+
+      boolean active = inputMode && r==inputR && c==inputC;
+
+      fill(active ? color(255,200,120) : 240);
+      rect(x+c*cell,y+r*cell,cell,cell);
+
+      String txt = nf(ke[activeElement][r][c],0,2);
+      if(active) txt = currentInput;
+
+      fill(0);
+      text(txt, x+c*cell+cell/2, y+r*cell+cell/2);
+    }
+  }
+}
+
+// =====================================================
+void drawDOFEditor(){
+
+  float x=40;
+  float y=120 + LOCAL*cell + 40;
+
+  fill(0);
+  text("DOF Mapping", x+120, y-20);
+
+  for(int i=0;i<LOCAL;i++){
+
+    boolean active = dofInputMode && i==dofIndex;
+
+    fill(active ? color(255,200,120) : 230);
+    rect(x+i*cell,y,cell,cell);
+
+    String txt = "g"+(C[activeElement][i]+1);
+    if(active) txt = currentInput;
+
+    fill(0);
+    text(txt, x+i*cell+cell/2, y+cell/2);
+
+    // ✅ INDIVIDUAL RANDOM BUTTON
+    fill(200,150,255);
+    rect(x+i*cell, y+cell+5, cell, 30);
+    fill(0);
+    text("R", x+i*cell+cell/2, y+cell+20);
+  }
+}
+
+// =====================================================
+void drawGlobal(){
+
+  float x = width*0.55, y = 120;
+
+  fill(0);
+  text("GLOBAL MATRIX", x+200,y-50);
+
+  for(int r=0;r<GLOBAL;r++){
+    for(int c=0;c<GLOBAL;c++){
+
+      fill(hitCount[r][c]==0 ? 255 : color(200,180,120));
+      rect(x+c*cell,y+r*cell,cell,cell);
+
+      fill(0);
+      text(nf(K[r][c],0,2),
+        x+c*cell+cell/2,
+        y+r*cell+cell/2);
+    }
+  }
+}
+
+// =====================================================
+void drawButtons(){
+
+  fill(100,200,100);
+  rect(40, height-100, 120, 50);
+  fill(0);
+  text("FINISH", 100, height-75);
+
+  fill(100,150,250);
+  rect(200, height-100, 150, 50);
+  fill(0);
+  text("ASSEMBLE", 275, height-75);
+}
+
+// =====================================================
+void drawKeypad(){
+
+  if(!inputMode && !dofInputMode) return;
+
+  float x = 40, y = height-350;
+
+  String[] keys = {
+    "7","8","9",
+    "4","5","6",
+    "1","2","3",
+    "0",".","OK"
+  };
+
+  int idx=0;
+
+  for(int r=0;r<4;r++){
+    for(int c=0;c<3;c++){
+
+      fill(220);
+      rect(x+c*60,y+r*60,50,50);
+
+      fill(0);
+      text(keys[idx], x+c*60+25, y+r*60+25);
+      idx++;
+    }
+  }
+}
+
+// =====================================================
+void mousePressed(){
+
+  if(assemblyMode){
+    stepParallel();
+    return;
+  }
+
+  for(int k=0;k<E;k++){
+    if(overRect(40 + k*120, 20, 100, 40)){
+      activeElement = k;
+      return;
+    }
+  }
+
+  float x=40, y=120;
+
+  for(int r=0;r<LOCAL;r++){
+    for(int c=0;c<LOCAL;c++){
+      if(overRect(x+c*cell,y+r*cell,cell,cell)){
+        inputMode=true;
+        dofInputMode=false;
+        inputR=r; inputC=c;
+        currentInput="";
+        return;
+      }
+    }
+  }
+
+  float yDOF = y + LOCAL*cell + 40;
+
+  for(int i=0;i<LOCAL;i++){
+
+    if(overRect(x+i*cell,yDOF,cell,cell)){
+      dofInputMode=true;
+      inputMode=false;
+      dofIndex=i;
+      currentInput="";
+      return;
+    }
+
+    // ✅ RANDOM ONLY THIS DOF
+    if(overRect(x+i*cell,yDOF+cell+5,cell,30)){
+      C[activeElement][i] = int(random(GLOBAL));
+      return;
+    }
+  }
+
+  if(overRect(40,height-100,120,50)){
+    allFinished = true;
+    return;
+  }
+
+  if(overRect(200,height-100,150,50) && allFinished){
+    assemblyMode = true;
+    return;
+  }
+
+  if(inputMode || dofInputMode){
+    handleKeypad();
+  }
+}
+
+// =====================================================
+void handleKeypad(){
+
+  float x = 40, y = height-350;
+
+  String[] keys = {
+    "7","8","9",
+    "4","5","6",
+    "1","2","3",
+    "0",".","OK"
+  };
+
+  int idx=0;
+
+  for(int r=0;r<4;r++){
+    for(int c=0;c<3;c++){
+
+      if(overRect(x+c*60,y+r*60,50,50)){
+
+        String key = keys[idx];
+
+        if(key.equals("OK")){
+
+          if(currentInput.length()>0){
+
+            if(inputMode){
+              float val = float(currentInput);
+              ke[activeElement][inputR][inputC] = val; // ✅ NO SYMMETRY
+            }
+
+            if(dofInputMode){
+              int val = int(currentInput)-1;
+              if(val>=0 && val<GLOBAL)
+                C[activeElement][dofIndex] = val;
+            }
+          }
+
+          inputMode=false;
+          dofInputMode=false;
+        }
+        else{
+          currentInput += key;
+        }
+
+        return;
+      }
+      idx++;
+    }
+  }
+}
+
+// =====================================================
+void stepParallel(){
+
+  for(int k=0;k<E;k++){
+
+    if(finished[k]) continue;
+
+    int i = ei[k];
+    int j = ej[k];
+
+    int I = C[k][i];
+    int J = C[k][j];
+
+    K[I][J] += ke[k][i][j];
+    hitCount[I][J]++;
+
+    ej[k]++;
+    if(ej[k]>=LOCAL){
+      ej[k]=0;
+      ei[k]++;
+    }
+
+    if(ei[k]>=LOCAL)
+      finished[k]=true;
+  }
+}
+
+// =====================================================
+void drawInfo(){
+
+  if(!assemblyMode) return;
+
+  fill(0);
+
+  String msg="";
+
+  for(int k=0;k<E;k++){
+    if(!finished[k]){
+      int I=C[k][ei[k]];
+      int J=C[k][ej[k]];
+      msg += "E"+(k+1)+"→K("+(I+1)+","+(J+1)+")  ";
+    }
+  }
+
+  text(msg, width*0.6, height-40);
+}
